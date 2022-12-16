@@ -1,5 +1,5 @@
-from tmps.units import u0, pi
-from tmps.fio import IO
+from units import u0, pi
+from fio import IO
 from copy import deepcopy
 from numpy.linalg import norm, inv
 from scipy.special import ellipe, ellipk
@@ -8,8 +8,15 @@ from scipy.interpolate import RegularGridInterpolator
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# polynomial fit to experimental current pulse
+
 def current_pulse(t, t0, tau, shape, scale, **kwargs):
+    try:
+        return np.array([_current_pulse(ti, t0, tau, shape, scale, **kwargs) for ti in t])
+    except:
+        return _current_pulse(t, t0, tau, shape, scale, **kwargs)
+
+# polynomial fit to experimental current pulse
+def _current_pulse(t, t0, tau, shape, scale, **kwargs):
     ps = [
         -3.416_293_843_922_860_1e-39,
         2.558_364_211_799_268_4e-35,
@@ -67,7 +74,7 @@ def local_coords(n):
     """
     n = n / norm(n)
     if np.abs(n[2]) == 1.0:
-        l = np.array([1.0, 0.0, 0.0])
+        l = np.array([n[2], 0.0, 0.0])
     else:
         l = np.cross(n, np.array([0.0, 0.0, 1.0]))
     l = l / norm(l)
@@ -131,48 +138,9 @@ class Domain:
         return tuple([self.interpolation(V) for V in VXYZ])
 
 
-class Field(IO):
-    def __init__(self, geometry, dir=None, nickname=None, recalc=False, save=True):
-        if "ang" not in geometry:
-            geometry["ang"] = 0.0
-        if "d" not in geometry:
-            geometry["d"] = 0.086
-        if "method" not in geometry:
-            geometry["method"] = "exact"
-        if "meshspec" not in geometry:
-            meshspec = [[-1.0, 1.0, 100]] * 3
-        else:
-            meshspec = geometry["meshspec"]
-
-        geometry["n"] = np.array(geometry["n"], dtype=float)
-        geometry["r0"] = np.array(geometry["r0"], dtype=float)
-        if geometry["config"][0:2] == "sq":
-            sq = True
-            config = geometry["config"][3:]
-        else:
-            sq = False
-
-        config = geometry["config"]
-        sqoffset = 0
-        if config[0:2] == "sq":
-            sq = True
-            sqoffset = 2
-
-        self.meshspec = meshspec
-        self.config = config
+class Field:
+    def __init__(self):
         self.base_args = []
-        self.geometry = geometry
-        getattr(self, "add_" + self.config[sqoffset:])(sq=sq, **self.geometry)
-
-        super().__init__(
-            dir=dir, nickname=nickname, recalc=recalc, uid_keys=["geometry"]
-        )
-
-        if self.recalc:
-            self.make_interpolation(meshspec)
-
-        if save and not self.loaded:
-            self.save()
 
     def evaluate(self, r):
         B = np.zeros_like(r)
@@ -202,43 +170,39 @@ class Field(IO):
         self.normgradnormB_interp = domain.interpolation(normgradnormBXYZ)
 
     @staticmethod
-    def Bline_zaxis(r, L, d, I=None, method=None, **kwargs):
-        if method == "exact":
-            rho, phi, z = cyl_coords(r)
-            zm = 2 * z - L
-            zp = 2 * z + L
-            radm = np.sqrt(rho ** 2 + zm ** 2)
-            radp = np.sqrt(rho ** 2 + zp ** 2)
-            Bphi = u0 * I / (4 * pi * rho) * (zp / radp - zm / radm)
-            Bz = np.zeros_like(Bphi)
-            Bphi[np.isnan(Bphi)] = np.nan
-            Bphi[np.isinf(Bphi)] = np.nan
-            B = np.c_[-np.sin(phi) * Bphi, np.cos(phi) * Bphi, Bz]
-            return B
+    def Bline_zaxis(r, L, d, I=None, **kwargs):
+        rho, phi, z = cyl_coords(r)
+        zm = 2 * z - L
+        zp = 2 * z + L
+        radm = np.sqrt(rho ** 2 + zm ** 2)
+        radp = np.sqrt(rho ** 2 + zp ** 2)
+        Bphi = u0 * I / (4 * pi * rho) * (zp / radp - zm / radm)
+        Bz = np.zeros_like(Bphi)
+        Bphi[np.isnan(Bphi)] = np.nan
+        Bphi[np.isinf(Bphi)] = np.nan
+        B = np.c_[-np.sin(phi) * Bphi, np.cos(phi) * Bphi, Bz]
+        return B
 
     @staticmethod
-    def Bloop_zaxis(r, R=None, I=None, method="exact", **kwargs):
+    def Bloop_zaxis(r, R=None, I=None,  **kwargs):
         rho, phi, z = cyl_coords(r)
-        if method == "exact":
-            E = ellipe(4 * R * rho / ((R + rho) ** 2 + z ** 2))
-            K = ellipk(4 * R * rho / ((R + rho) ** 2 + z ** 2))
-            Bz = (
-                u0
-                * I
-                / (2 * pi * np.sqrt((R + rho) ** 2 + z ** 2))
-                * (K + E * (R ** 2 - rho ** 2 - z ** 2) / ((R - rho) ** 2 + z ** 2))
-            )
+        E = ellipe(4 * R * rho / ((R + rho) ** 2 + z ** 2))
+        K = ellipk(4 * R * rho / ((R + rho) ** 2 + z ** 2))
+        Bz = (
+            u0
+            * I
+            / (2 * pi * np.sqrt((R + rho) ** 2 + z ** 2))
+            * (K + E * (R ** 2 - rho ** 2 - z ** 2) / ((R - rho) ** 2 + z ** 2))
+        )
 
-            Brho = (
-                u0
-                * I
-                * z
-                / (2 * pi * rho * np.sqrt((R + rho) ** 2 + z ** 2))
-                * (-K + E * (R ** 2 + rho ** 2 + z ** 2) / ((R - rho) ** 2 + z ** 2))
-            )
+        Brho = (
+            u0
+            * I
+            * z
+            / (2 * pi * rho * np.sqrt((R + rho) ** 2 + z ** 2))
+            * (-K + E * (R ** 2 + rho ** 2 + z ** 2) / ((R - rho) ** 2 + z ** 2))
+        )
 
-        if method == "approx":
-            pass
         Brho[np.isnan(Brho)] = 0.0
         Brho[np.isinf(Brho)] = 0.0
         Bz[np.isnan(Bz)] = 0.0
@@ -259,18 +223,18 @@ class Field(IO):
         base_arg.update(kwargs)
         self.base_args += [base_arg]
 
-    def add_sqloop(self, r0, n, ang, d, L, W, sq=True, I=1.0, method="exact"):
+    def add_sqloop(self, r0, n, ang, d, L, W, sq=True, I=1.0):
         l, m, n = local_coords(n)
         rot = rotation_matrix(n * np.sin(ang))
         l = np.dot(l, rot)
         m = np.dot(m, rot)
-        self.add_line(n=l, ang=ang, r0=r0 - m * W / 2, L=L, d=d, I=I, method=method)
-        self.add_line(n=-l, ang=ang, r0=r0 + m * W / 2, L=L, d=d, I=I, method=method)
-        self.add_line(n=-m, ang=ang, r0=r0 - l * L / 2, L=W, d=d, I=I, method=method)
-        self.add_line(n=m, ang=ang, r0=r0 + l * L / 2, L=W, d=d, I=I, method=method)
+        self.add_line(n=l, ang=ang, r0=r0 - m * W / 2, L=L, d=d, I=I)
+        self.add_line(n=-l, ang=ang, r0=r0 + m * W / 2, L=L, d=d, I=I)
+        self.add_line(n=-m, ang=ang, r0=r0 - l * L / 2, L=W, d=d, I=I)
+        self.add_line(n=m, ang=ang, r0=r0 + l * L / 2, L=W, d=d, I=I)
 
     def add_Nline(
-        self, n, r0, d, L, a, ang=0, Nline=6, taper=0, I=1.0, method="exact", **kwargs
+        self, n, r0, d, L, a, ang=0, Nline=6, taper=0, I=1.0, **kwargs
     ):
         ang *= pi / 180
         taper *= pi / 180
@@ -298,13 +262,13 @@ class Field(IO):
             ni = ni.dot(trans)
             ri = ri.dot(trans)
             self.add_line(
-                n=ni, ang=0, r0=r0 + ri, L=L, d=d, I=I * (-1) ** parity, method=method
+                n=ni, ang=0, r0=r0 + ri, L=L, d=d, I=I * (-1) ** parity
             )
 
-    def add_coil(self, r0, n, ang, d, M, N, I=1.0, method="exact", sq=False, **kwargs):
+    def add_coil(self, r0, n, ang, d, M, N, shift_sign=1, I=1.0, sq=False, color="k", **kwargs):
         for k in range(N):
             for j in range(M):
-                shift = n * (j + 1 / 2) * d
+                shift = shift_sign*n * (j + 1 / 2) * d
                 expand = (k + 1 / 2) * d
                 if sq:
                     L = kwargs["L"]
@@ -317,7 +281,6 @@ class Field(IO):
                         L=L + expand,
                         W=W + expand,
                         I=I,
-                        method=method,
                     )
                 else:
                     R = kwargs["R"]
@@ -328,24 +291,20 @@ class Field(IO):
                         d=d,
                         R=R + expand,
                         I=I,
-                        method=method,
+                        color=color
                     )
 
-    def add_AH(self, r0, n, ang, d, M, N, A, I=1.0, method="exact", sq=False, **kwargs):
+    def add_AH(self, r0, n, ang, d, M, N, A, I=1.0,  sq=False, **kwargs):
         r0a = r0 + n * A
         r0b = r0 - n * A
-        if not sq:
-            ang = pi / 2.0 - ang
-        self.add_coil(r0a, n, ang, d, M, N, I=I, method=method, sq=sq, **kwargs)
-        self.add_coil(r0b, -n, -ang, d, M, N, I=I, method=method, sq=sq, **kwargs)
+        self.add_coil(r0a, n, ang, d, M, N, I=I, sq=sq, **kwargs)
+        self.add_coil(r0b, n, ang, d, M, N, shift_sign=-1, I=-I, sq=sq, **kwargs)
 
-    def add_HH(self, r0, n, ang, d, M, N, A, I=1.0, method="exact", sq=False, **kwargs):
+    def add_HH(self, r0, n, ang, d, M, N, A, I=1.0, sq=False, **kwargs):
         r0a = r0 + n * A
         r0b = r0 - n * A
-        if not sq:
-            ang = pi / 2.0 - ang
-        self.add_coil(r0a, n, ang, d, M, N, I=I, method=method, sq=sq, **kwargs)
-        self.add_coil(r0b, -n, -ang, d, M, N, I=-I, method=method, sq=sq, **kwargs)
+        self.add_coil(r0a, n, ang, d, M, N, I=I, sq=sq, **kwargs)
+        self.add_coil(r0b, n, ang, d, M, N, shift_sign=-1, I=I, sq=sq, **kwargs)
 
     def add_mop(
         self,
@@ -359,7 +318,6 @@ class Field(IO):
         AHH,
         IAH=1.0,
         IHH=1.0,
-        method="exact",
         sq=False,
         **kwargs,
     ):
@@ -380,8 +338,8 @@ class Field(IO):
             HH_kwargs["R"] = R
             R = AH_kwargs.pop("RAH")
             AH_kwargs["R"] = R
-        self.add_HH(r0, n, ang, d, M, N, AHH, I=IHH, method=method, sq=sq, **HH_kwargs)
-        self.add_AH(r0, n, ang, d, M, N, AAH, I=IAH, method=method, sq=sq, **AH_kwargs)
+        self.add_HH(r0, n, ang, d, M, N, AHH, I=IHH, sq=sq, **HH_kwargs)
+        self.add_AH(r0, n, ang, d, M, N, AAH, I=IAH, sq=sq, **AH_kwargs)
 
     def add_mop3(
         self,
@@ -395,7 +353,6 @@ class Field(IO):
         A2,
         I2=1.0,
         I1=1.0,
-        method="exact",
         sq=False,
         **kwargs,
     ):
@@ -416,14 +373,14 @@ class Field(IO):
             HH_kwargs["R"] = R
             R = C_kwargs.pop("R1")
             C_kwargs["R"] = R
-        self.add_HH(r0, n, ang, d, M, N, A2, I=I2, method=method, sq=sq, **HH_kwargs)
+        self.add_HH(r0, n, ang, d, M, N, A2, I=I2, sq=sq, **HH_kwargs)
         if I1 >= 0:
             r0a = r0 + n * A1
-            self.add_coil(r0a, n, ang, d, M, N, I=I1, method=method, sq=sq, **C_kwargs)
+            self.add_coil(r0a, n, ang, d, M, N, I=I1, sq=sq, **C_kwargs)
         elif I1 < 0:
             r0b = r0 - n * A1
             self.add_coil(
-                r0b, -n, -ang, d, M, N, I=-I1, method=method, sq=sq, **C_kwargs
+                r0b, -n, -ang, d, M, N, I=-I1, sq=sq, **C_kwargs
             )
 
     def line_viz(self, ax, n, r0, L, d, color="k", **kwargs):
@@ -472,10 +429,14 @@ class Field(IO):
         lw=0.5,
         azim=45,
         elev=45,
+        domain=None,
+        gauss=False,
         **kwargs,
     ):
-        r = self.domain.points
-        X, Y, Z = self.domain.grid
+        if domain is None:
+            domain = self.domain
+        r = domain.points
+        X, Y, Z = domain.grid
 
         fig = plt.gcf()
         if axs is None:
@@ -486,12 +447,16 @@ class Field(IO):
             print("Plotting 3D gradient vectors...")
             interps = self.gradnormB_interp
             title = r"$\nabla B$"
+
         else:
             print("Plotting 3D field vectors...")
             interps = self.B_interp
             title = r"$\bf{B}$"
 
-        VX, VY, VZ = [1e12 * interp(r) for interp in interps]
+        unit = 1e12
+        if gauss:
+            unit *= 1e4
+        VX, VY, VZ = [unit * interp(r) for interp in interps]
         VX.shape = X.shape
         VY.shape = Y.shape
         VZ.shape = Z.shape
@@ -514,9 +479,9 @@ class Field(IO):
             lw=lw,
             color="k",
         )
-        axs.set_ylabel("y [cm]")
-        axs.set_xlabel("x [cm]")
-        axs.set_zlabel("z [cm]")
+        axs.set_ylabel("y (cm)")
+        axs.set_xlabel("x (cm)")
+        axs.set_zlabel("z (cm)")
         axs.set_title(title)
         axs.azim = azim
         axs.elev = elev
@@ -532,26 +497,38 @@ class Field(IO):
         planes={"x": [-0.5, 0.0, 0.5], "y": [-0.5, 0.0, 0.5], "z": [-0.5, 0.0, 0.5]},
         grad_norm=False,
         Bclip=None,
+        domain=None,
+        gauss=False,
+        figsize=(7,8),
         **kwargs,
     ):
-        xyz = self.domain.axes
-        Xshape, Yshape, Zshape = self.domain.shapes
+        if domain is None:
+            domain = self.domain
+        xyz = domain.axes
+        Xshape, Yshape, Zshape = domain.shapes
         if grad_norm:
             print("Plotting 2D contour slice of gradient...")
             interps = self.gradnormB_interp
             title = r"$\nabla B$"
+            if gauss:
+                title += " (G/cm)"
+            else:
+                title += " (T/cm)"
         else:
             print("Plotting 2D contour slice of field...")
             interps = self.B_interp
             title = r"$\bf{B}$"
-
+            if gauss:
+                title += " (G)"
+            else:
+                title += " (T)"
         consts = ["xyz".index(k) for k in planes.keys()]
         vars = ["xyz"[:c] + "xyz"[c + 1 :] for c in consts]
         vars = [["xyz".index(i) for i in vs] for vs in vars]
 
         nrow = len(planes)
         ncol = max([len(p) for p in planes.values()])
-        fig, axs = plt.subplots(nrow, ncol, sharex=False, sharey="row", figsize=(7, 8))
+        fig, axs = plt.subplots(nrow, ncol, sharex=False, sharey="row", figsize=figsize, constrained_layout=True)
         for i, (c, v) in enumerate(zip(consts, vars)):
             ordered_xyz = [0, 0, 0]
             ordered_xyz[v[0]] = xyz[v[0]]
@@ -568,7 +545,10 @@ class Field(IO):
                 X, Y, Z = np.meshgrid(*ordered_xyz, indexing="ij")
                 XYZ = [X, Y, Z]
                 r = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
-                VX, VY, VZ = [1e12 * interp(r) for interp in interps]
+                unit = 1e12
+                if gauss:
+                    unit *= 1e4
+                VX, VY, VZ = [unit * interp(r) for interp in interps]
                 VX.shape = X.shape
                 VY.shape = Y.shape
                 VZ.shape = Z.shape
@@ -592,7 +572,7 @@ class Field(IO):
                 skip_s = tuple(skip_s)
                 x = xyz[v[0]]
                 y = xyz[v[1]]
-                z = B[s].T
+                z = np.sqrt(VXYZ[v[0]]**2 + VXYZ[v[1]]**2)[s].T
                 ax.imshow(
                     z,
                     origin="lower",
@@ -602,7 +582,7 @@ class Field(IO):
                 if contours:
                     cp = ax.contour(x, y, z, contours, colors="k")
                     if label_contours:
-                        ax.clabel(cp, inline=1, fontsize=11, fmt="%1.2f")
+                        ax.clabel(cp, inline=1, fontsize=11, fmt="%1.f")
 
                 if arrows:
                     ax.quiver(
@@ -614,10 +594,10 @@ class Field(IO):
                         lw=0.5,
                         color="k",
                     )
-                ax.set_title("$%s = %.2f$" % ("xyz"[c], const_val), fontsize=12)
-                ax.set_xlabel("xyz"[v[0]] + " [cm]")
+                ax.set_title("$%s = %.2f$ cm" % ("xyz"[c], const_val))
+                ax.set_xlabel("xyz"[v[0]] + " (cm)")
                 if j == 0:
-                    ax.set_ylabel("xyz"[v[1]] + " [cm]")
+                    ax.set_ylabel("xyz"[v[1]] + " (cm)")
         fig.tight_layout()
         fig.suptitle(title)
         plt.subplots_adjust(
@@ -632,8 +612,12 @@ class Field(IO):
         line=[0.0, 0.0, "var"],
         grad_norm=False,
         legend=True,
+        domain=None,
+        gauss=False,
         **plot_kwargs,
     ):
+        if domain is None:
+            domain = self.domain
 
         if axs is None:
             fig, axs = plt.subplots(1, 1, figsize=(7, 3))
@@ -644,20 +628,27 @@ class Field(IO):
         if grad_norm:
             interps = self.gradnormB_interp
             norm_interp = self.normgradnormB_interp
-            ylabel = r"$\partial B / \partial %s$ [T/cm]"
+            ylabel = r"$\partial B / \partial %s$"
+            if gauss:
+                ylabel += " (G/cm)"
+            else:
+                ylabel += " (T/cm)"
 
         else:
             interps = self.B_interp
             norm_interp = self.normB_interp
-            ylabel = "$B_%s$ [T]"
-
+            ylabel = "$B_%s$"
+            if gauss:
+                ylabel += " (G)"
+            else:
+                ylabel += " (T)"
         comp = "xyzn".index(component)
         if component in "xyz":
             interp = interps[comp]
         elif component == "n":
             interp = norm_interp
 
-        xyz = self.domain.axes
+        xyz = domain.axes
         vari = line.index("var")
         vars = xyz[vari]
         label = ""
@@ -670,11 +661,14 @@ class Field(IO):
                 points[::, idx] = v
                 label += " ${} = {}$".format(k, v)
 
-        axs.plot(vars, 1e12 * interp(points), label=label, **plot_kwargs)
+        unit = 1e12
+        if gauss:
+            unit *= 1e4
+        axs.plot(vars, unit * interp(points), label=label, **plot_kwargs)
         if legend:
             axs.legend(fontsize=10)
         axs.set_ylabel(ylabel % "xyzn"[comp])
-        axs.set_xlabel(r"$%s$ [cm]" % "xyz"[vari])
+        axs.set_xlabel(r"$%s$ (cm)" % "xyz"[vari])
         axs.label_outer()
         fig.tight_layout()
         return fig, axs
@@ -684,6 +678,10 @@ class Field(IO):
         components="xyzn",
         lines=[[0.0, 0.0, "var"], [0.0, "var", 0.0], ["var", 0.0, 0.0]],
         grad_norm=False,
+        domain=None,
+        gauss=False,
+        figsize=(7,7),
+        legend=True
     ):
         varinds = [[], [], []]
         for i, line in enumerate(lines):
@@ -691,7 +689,7 @@ class Field(IO):
         varinds = [vinds for vinds in varinds if vinds != []]
         nrow = len(components)
         ncol = len(varinds)
-        fig, axs = plt.subplots(nrow, ncol, sharex="col", sharey="row", figsize=(7, 7))
+        fig, axs = plt.subplots(nrow, ncol, sharex="col", sharey="row", figsize=figsize)
         if grad_norm:
             print("Plotting 1D line cut of gradient...")
         else:
@@ -708,10 +706,13 @@ class Field(IO):
                 for idx in vinds:
                     line = lines[idx]
                     self.plot_linecut(
-                        axs=ax, component=comp, line=lines[idx], grad_norm=grad_norm
+                        axs=ax, component=comp, line=lines[idx], legend=legend,
+                        grad_norm=grad_norm, domain=domain, gauss=gauss
                     )
         fig.tight_layout()
         return fig, axs
+
+
 
 
 if __name__ == "__main__":

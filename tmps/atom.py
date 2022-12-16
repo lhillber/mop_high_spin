@@ -59,9 +59,7 @@ class Atom(IO):
         n = int((2 * J + 1) * (2 * I + 1))
         # hfs proportional to I.J, easy in c basis
         IdotJ = (
-            1.0
-            / 2.0
-            * np.array(
+            1.0 / 2.0 * np.array(
                 [(f * (f + 1) - J * (J + 1) - I * (I + 1)) for f in cstates[::, 0]]
             )
         )

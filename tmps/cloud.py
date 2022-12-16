@@ -1,7 +1,5 @@
 # cloud.py
-
-from tmps.fio import IO
-from tmps.units import kB, h
+from units import kB, h
 
 import sys
 import numpy as np
@@ -14,7 +12,8 @@ from scipy.special import erfinv
 from scipy.linalg import solve_toeplitz
 from scipy.interpolate import RegularGridInterpolator
 from magnetics import current_pulse
-from units import muB
+from units import muB, g
+gdef = g
 
 class Cloud:
     def __init__(
@@ -26,6 +25,7 @@ class Cloud:
         S=1,
         J=1/2,
         gJ=1,
+        g=None,
         mass=1e-26
     ):
 
@@ -38,12 +38,16 @@ class Cloud:
         self.mJ_states = np.arange(-J, J+1)
         self.gJ = gJ
         self.mass = mass
+        if g is None:
+            self.g = gdef
+        else:
+            self.g = g
         self.state = np.zeros((self.N, 7))
-        self.t = 0
+        self.t = 0.0
 
     def to_3vec(self, A):
-        if type(A) in (int, float):
-            return np.array([A,A,A])
+        if type(A) in (int, float, np.float64):
+            return np.array([A, A, A])
         else:
             return np.array(A)
 
@@ -94,11 +98,18 @@ class Cloud:
         return skew(self.xs, axis=0)
 
 
-    def initialize_state(self, inplace=False):
+    def initialize_state(self, spatial_distribution="gauss"):
         m = self.mass
         for i in range(3):
             v = (kB * self.T0[i] / m) ** (1 / 2)
-            self.xs[:,i] = np.random.normal(self.R0[i], self.S0[i], self.N)
+            if spatial_distribution == "gauss":
+                x = np.random.normal(self.R0[i], self.S0[i], self.N)
+            elif spatial_distribution == "flat":
+                x = np.random.uniform(
+                    self.R0[i] - self.S0[i],
+                    self.R0[i] + self.S0[i],
+                    self.N)
+            self.xs[:,i] = x
             self.vs[:,i] = np.random.normal(self.V0[i], v, self.N)
             self.mJs = np.random.choice(self.mJ_states, self.N)
 
@@ -108,7 +119,7 @@ class Cloud:
             coordi = ["x","y","z", "vx","vy","vz"].index(coord)
             vals = self.state[:, coordi]
             if self.J == 1/2:
-                edges = [-np.inf, 0, np.inf]
+                edges = [-np.inf, self.R[coordi], np.inf]
             else:
                 if rule == "equal_number":
                     matcol = np.zeros(int(2*self.J))
@@ -136,13 +147,12 @@ class Cloud:
     def make_acceleration(self, pulse):
         dBdx_interp, dBdy_interp, dBdz_interp = pulse["field"].gradnormB_interp
         def a(xs, t):
-            #print(pulse["t0"], t, pulse["t0"]+pulse["tau"])
-            current = current_pulse(t, **pulse)
+            current = current_pulse(float(t), **pulse)
             coefficient = -self.mJs * self.gJ * muB / self.mass
             coefficient = coefficient[..., np.newaxis]
             gradnorm_B = np.c_[dBdx_interp(xs), dBdy_interp(xs), dBdz_interp(xs)]
             a_xyz = coefficient * current * gradnorm_B
-            a_xyz[:,-1] -= 9.81 * 1e2 * 1e-12
+            a_xyz[:,-1] -= self.g
             return a_xyz
         return a
 
@@ -178,12 +188,13 @@ class Cloud:
             else:
                 t_final = t_initial + pulse["t0"] + pulse["tau"]
                 pulse_ts = np.arange(t_initial, t_final, dt)
-                pulse["Npts"] = len(np.arange(pulse["t0"], pulse["t0"] + pulse["tau"], dt))
+                pulse["Npts"] = len(np.arange(0, pulse["t0"] + pulse["tau"], dt))
                 pulse["t0"] = t_initial
             ts = np.r_[ts, pulse_ts]
             t_initial = t_final
+        ts = np.r_[ts, ts[-1]+dt]
         self.ts = ts
-        self.states = np.zeros((1+len(ts), self.N, 7))
+        self.states = np.zeros((len(ts), self.N, 7))
 
 
     def run(self):
@@ -198,17 +209,17 @@ class Cloud:
             else:
                 self.set_mJs(pulse["mJ_coord"], pulse["mJ_rule"])
                 a = self.make_acceleration(pulse)
-                t_final = t_initial + pulse["t0"] + pulse["tau"]
-                pulse_ts = np.arange(t_initial, t_final, self.dt)
-                for ti in range(pulse["Npts"]):
-                   self.rk4(a)
-                   self.states[ti] = self.state
-                   ti += 1
+                for _ in range(pulse["Npts"]):
+                    self.rk4(a)
+                    self.states[ti] = self.state
+                    ti += 1
 
 
     # time evolution (no forces)
     def free_expand(self, Dt):
-        self.xs = self.xs + Dt * self.vs
+        self.xs += self.vs * Dt
+        self.xs[:, -1] -= 0.5 * self.g * Dt**2
+        self.vs[:, -1] -= self.g * Dt
         self.t += Dt
         return
 
@@ -266,8 +277,8 @@ class Cloud:
         fig.subplots_adjust(hspace=0.4, wspace=0.4)
         return fig, axs
 
-    def plot_phasespace_slice(self, coord_x, coord_y, mJ_mask=None,
-        ax=None, remove_mean=False, Nsample=None,
+    def plot_phasespace_slice(self, coord_x, coord_y, ti=None, mJ_mask=None,
+        ax=None, remove_mean=False, Nsample=None, scale_velocity=False,
         scatter_kwargs={}, contour_kwargs={}, contour=True, imshow=False, scatter=True):
         if ax is None:
             fig, ax = plt.subplots(1,1)
@@ -275,21 +286,33 @@ class Cloud:
             fig = plt.gcf()
         coord_xi = ["x","y","z","vx","vy", "vz"].index(coord_x)
         coord_yi = ["x","y","z","vx","vy", "vz"].index(coord_y)
-        x = self.state[:, coord_xi]
-        y = self.state[:, coord_yi]
+        if ti is None:
+            x = self.state[:, coord_xi]
+            y = self.state[:, coord_yi]
+            mJs = self.mJs
+        else:
+            x = self.states[ti, :, coord_xi]
+            y = self.states[ti, :, coord_yi]
+            mJs = self.states[ti, :, -1]
         if mJ_mask is None:
             mask = np.ones_like(x, dtype=bool)
         else:
-            mask = self.mJs == mJ_mask
+            mask = mJs == mJ_mask
         if Nsample is None:
             Nsample = self.N
         else:
             Nsample = int(Nsample)
         # convert velocities to cm/s from cm/us
         if coord_xi>=3:
-            x = x*1e6
+            if scale_velocity:
+                x = x / np.sqrt(kB*self.T0[coord_xi%3]/self.mass)
+            else:
+                x = x*1e6
         if coord_yi>=3:
-            y = y*1e6
+            if scale_velocity:
+                y = y / np.sqrt(kB*self.T0[coord_yi%3]/self.mass)
+            else:
+                y = y*1e6
         xm = np.mean(x)
         ym = np.mean(y)
         dx = 3 * np.std(x)
@@ -304,19 +327,22 @@ class Cloud:
         ax.set_ylim(ym - dy, ym + dy)
         Z, [xax, yax] = fastKDE.pdf(x, y)
         if imshow:
-            ax.imshow(Z, extent = [xax[0], xax[-1], yax[0], yax[-1]], origin="lower", aspect="equal")
+            obj = ax.imshow(Z,
+                extent=[xax[0], xax[-1], yax[0], yax[-1]],
+                origin="lower", aspect="equal")
         if scatter:
-            interp = RegularGridInterpolator((yax, xax), Z)
+            interp = RegularGridInterpolator((xax, yax), Z.T)
             density = interp(np.c_[x[:Nsample], y[:Nsample]])
             idx = density.argsort()
             x, y, density, mask = x[idx], y[idx], density[idx], mask[idx]
             use_scatter_kwargs = {"s":20, "ec":"none"}
             use_scatter_kwargs.update(scatter_kwargs)
-            ax.scatter(x[mask], y[mask], c=density[mask], **use_scatter_kwargs)
+            obj = ax.scatter(x[mask], y[mask], c=density[mask], **use_scatter_kwargs)
         if contour:
             use_contour_kwargs = {"levels": 4, "colors": "k"}
             use_contour_kwargs.update(contour_kwargs)
             ax.contour(xax, yax, Z, **use_contour_kwargs)
+        return obj
 
 
 if __name__ == "__main__":

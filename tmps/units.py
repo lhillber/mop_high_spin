@@ -18,6 +18,9 @@ ee = 1.60217e-19 * 1e-6
 eps0 = 8.854187817e-12 * 1e24 * 1e-6
 # vac permiability kg m A^-2 s^-2 cm/m s^2/us^2
 u0 = 1.257e-6 * 1e2 * 1e-12
+# gavity acceleration (positive) m s^-2 cm/m s^2/us^2
+g = 9.81 * 1e2 * 1e-12
+
 
 # Li7 propertied a and b are HFS params in MHz,
 # outer layer is L, inner layer is J

@@ -100,6 +100,7 @@ class Cloud:
 
     def initialize_state(self, spatial_distribution="gauss"):
         m = self.mass
+        self.spatial_distribution = spatial_distribution
         for i in range(3):
             v = (kB * self.T0[i] / m) ** (1 / 2)
             if spatial_distribution == "gauss":
@@ -114,8 +115,10 @@ class Cloud:
             self.mJs = np.random.choice(self.mJ_states, self.N)
 
 
-    def set_mJs(self, coord="z", rule="equal_number"):
-        if coord is not None:
+    def _set_mJs_bak(self, coord="z", rule="equal_number"):
+        if rule=="optical_pumping":
+            self.mJs = -np.ones_like(self.mJs) * self.J
+        elif coord is not None:
             coordi = ["x","y","z", "vx","vy","vz"].index(coord)
             vals = self.state[:, coordi]
             if self.J == 1/2:
@@ -144,17 +147,44 @@ class Cloud:
                 self.mJs[mask] = mJ
 
 
+    def set_mJs(self, coord="z", rule="dum"):
+        if rule=="optical_pumping":
+            self.mJs = -np.ones_like(self.mJs) * self.J
+        elif coord is not None:
+            coordi = ["x","y","z", "vx","vy","vz"].index(coord)
+            vals = self.state[:, coordi]
+            sigma = np.std(vals)
+            if self.spatial_distribution == "gauss":
+                delta = 1.05 * (self.J + 1)**-0.85
+                half_width = delta * sigma
+            else:
+                delta = 1 / (2 * self.J + 1)
+                half_width = delta * np.sqrt(12) * sigma / 2
+            intervals = np.array([[(2*mJ-1)*half_width, (2*mJ+1)*half_width] for mJ in self.mJ_states])
+            intervals += np.mean(vals)
+            intervals[0, 0] = -np.inf
+            intervals[-1, -1] = np.inf
+            for mJ, interval in zip(self.mJ_states, intervals):
+                mask = np.logical_and(vals>=interval[0], vals<interval[1])
+                self.mJs[mask] = mJ
+
+
     def make_acceleration(self, pulse):
-        dBdx_interp, dBdy_interp, dBdz_interp = pulse["field"].gradnormB_interp
-        def a(xs, t):
-            current = current_pulse(float(t), **pulse)
-            coefficient = -self.mJs * self.gJ * muB / self.mass
-            coefficient = coefficient[..., np.newaxis]
-            gradnorm_B = np.c_[dBdx_interp(xs), dBdy_interp(xs), dBdz_interp(xs)]
-            a_xyz = coefficient * current * gradnorm_B
-            a_xyz[:,-1] -= self.g
-            return a_xyz
-        return a
+        if pulse["field"] == "expand_tof":
+            def a(xs, t):
+                return np.zeros_like(xs)
+            return a
+        else:
+            dBdx_interp, dBdy_interp, dBdz_interp = pulse["field"].gradnormB_interp
+            def a(xs, t):
+                current = current_pulse(float(t), **pulse)
+                coefficient = -self.mJs * self.gJ * muB / self.mass
+                coefficient = coefficient[..., np.newaxis]
+                gradnorm_B = np.c_[dBdx_interp(xs), dBdy_interp(xs), dBdz_interp(xs)]
+                a_xyz = coefficient * current * gradnorm_B
+                a_xyz[:,-1] -= self.g
+                return a_xyz
+            return a
 
 
     # time evolution
@@ -203,6 +233,7 @@ class Cloud:
         ti = 1
         for pulse in self.pulses:
             if pulse["field"] is None:
+                self.set_mJs(pulse["mJ_coord"], pulse["mJ_rule"])
                 self.free_expand(pulse["t0"])
                 self.states[ti] = self.state
                 ti += 1
@@ -279,7 +310,7 @@ class Cloud:
 
     def plot_phasespace_slice(self, coord_x, coord_y, ti=None, mJ_mask=None,
         ax=None, remove_mean=False, Nsample=None, scale_velocity=False,
-        scatter_kwargs={}, contour_kwargs={}, contour=True, imshow=False, scatter=True):
+        color_density=True, scatter_kwargs={}, contour_kwargs={}, contour=True, imshow=False, scatter=True):
         if ax is None:
             fig, ax = plt.subplots(1,1)
         else:
@@ -337,7 +368,10 @@ class Cloud:
             x, y, density, mask = x[idx], y[idx], density[idx], mask[idx]
             use_scatter_kwargs = {"s":20, "ec":"none"}
             use_scatter_kwargs.update(scatter_kwargs)
-            obj = ax.scatter(x[mask], y[mask], c=density[mask], **use_scatter_kwargs)
+            if color_density:
+                obj = ax.scatter(x[mask], y[mask], c=density[mask], **use_scatter_kwargs)
+            else:
+                obj = ax.scatter(x[mask], y[mask], **use_scatter_kwargs)
         if contour:
             use_contour_kwargs = {"levels": 4, "colors": "k"}
             use_contour_kwargs.update(contour_kwargs)

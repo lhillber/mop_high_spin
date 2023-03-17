@@ -6,8 +6,10 @@ from scipy.special import ellipe, ellipk
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D
-
+from mpl_toolkits.axes_grid1 import make_axes_locatable, ImageGrid
 
 def current_pulse(t, t0, tau, shape, scale, **kwargs):
     try:
@@ -488,122 +490,277 @@ class Field:
         self.viz(axs)
         return fig, axs
 
-    def plot_slices(
+
+    def plot_slice(
         self,
+        ax=None,
+        figsize=(5,4),
+        plane=("z", 0.0),
+        unit="G",
+        domain=None,
+        image=True,
+        image_clip=None,
+        cmap=None,
+        cbar=True,
+        arrows=True,
+        skip_arrows=10,
+        arrow_length_scale=1,
+        arrow_width_scale=1,
         contours=4,
         label_contours=True,
-        arrows=True,
-        skip=10,
-        planes={"x": [-0.5, 0.0, 0.5], "y": [-0.5, 0.0, 0.5], "z": [-0.5, 0.0, 0.5]},
-        grad_norm=False,
-        Bclip=None,
-        domain=None,
-        gauss=False,
-        figsize=(7,8),
-        **kwargs,
-    ):
+        contour_fmt="%1.f",
+        contour_label_positions=None,
+        transpose=False
+        ):
+        # set up
+        if ax is None:
+            fig, ax = plt.subplots(1,1, figsize=figsize)
+        else:
+            fig = plt.gcf()
+            figsize = fig.get_size_inches()
         if domain is None:
             domain = self.domain
-        xyz = domain.axes
-        Xshape, Yshape, Zshape = domain.shapes
-        if grad_norm:
+
+        units = unit.split("_per_")
+        if len(units) == 2:
             print("Plotting 2D contour slice of gradient...")
+            title = r"$\left | \nabla B \right |$"
             interps = self.gradnormB_interp
-            title = r"$\nabla B$"
-            if gauss:
-                title += " (G/cm)"
-            else:
-                title += " (T/cm)"
-        else:
+            grad_norm = True
+            Bunit, xunit = units
+            if Bunit.lower()[0] == "t":
+                unit = 1e12
+                title += " (T/"
+            elif Bunit.lower()[0] == "g":
+                unit = 1e12 * 1e4
+                title += " (G/"
+            if xunit.lower() == "cm":
+                title += "cm)"
+                unit *= 1
+            elif xunit.lower() == "m":
+                title += "m)"
+                unit *= 1e2
+        elif len(units) == 1:
             print("Plotting 2D contour slice of field...")
             interps = self.B_interp
+            grad_norm = False
+            Bunit = units[0]
+            interps = self.B_interp
             title = r"$\bf{B}$"
-            if gauss:
-                title += " (G)"
-            else:
+            if Bunit.lower()[0] == "t":
+                unit = 1e12
                 title += " (T)"
-        consts = ["xyz".index(k) for k in planes.keys()]
-        vars = ["xyz"[:c] + "xyz"[c + 1 :] for c in consts]
-        vars = [["xyz".index(i) for i in vs] for vs in vars]
+            elif Bunit.lower()[0] == "g":
+                unit = 1e12 * 1e4
+                title += " (G)"
+
+        # configure slice domain and data
+        const = "xyz".index(plane[0])
+        vars = "xyz"[:const] + "xyz"[const + 1:]
+        vars = ["xyz".index(v) for v in vars]
+        if transpose:
+            vars = vars[::-1]
+        const_val = plane[1]
+        xyz = domain.axes
+        Xshape, Yshape, Zshape = domain.shapes
+        ordered_xyz = [0, 0, 0]
+        ordered_xyz[vars[0]] = xyz[vars[0]]
+        ordered_xyz[vars[1]] = xyz[vars[1]]
+        ordered_xyz[const] = const_val
+        X, Y, Z = np.meshgrid(*ordered_xyz, indexing="ij")
+        XYZ = [X, Y, Z]
+        r = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
+        VX, VY, VZ = [unit * interp(r) for interp in interps]
+        VX.shape = X.shape
+        VY.shape = Y.shape
+        VZ.shape = Z.shape
+        VXYZ = [VX, VY, VZ]
+        B = np.sqrt(VX ** 2 + VY ** 2 + VZ ** 2)
+        if image_clip is None:
+            image_clip = np.max(B)
+        mask = B > image_clip
+        B[mask] = np.nan
+        VX[mask] = np.nan
+        VY[mask] = np.nan
+        VZ[mask] = np.nan
+        s = [slice(None, None, None)] * 3
+        skip_s = [slice(0, -1, skip_arrows),
+                  slice(0, -1, skip_arrows),
+                  slice(0, -1, skip_arrows)]
+        for ii, n in enumerate(B.shape):
+            if n == 1:
+                s[ii] = 0
+                skip_s[ii] = 0
+        s = tuple(s)
+        skip_s = tuple(skip_s)
+        x = ordered_xyz[vars[0]]
+        y = ordered_xyz[vars[1]]
+        z = np.sqrt(VXYZ[vars[0]]**2 + VXYZ[vars[1]]**2)[s].T
+        if transpose:
+            z = z.T
+
+        # visualizations
+        if image:
+            im = ax.imshow(
+                z,
+                origin="lower",
+                interpolation="None",
+                cmap=cmap,
+                extent=[x[0], x[-1], y[0], y[-1]],
+            )
+            if cbar:
+                divider = make_axes_locatable(ax)
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                fig.colorbar(im, cax=cax, location="right", label=title)
+
+        if arrows:
+            UU = VXYZ[vars[0]][skip_s]
+            VV = VXYZ[vars[1]][skip_s]
+            ax_w = ax.get_position().width * figsize[0]
+            ax_h = ax.get_position().height * figsize[1]
+            ax_size = np.sqrt(ax_h**2 + ax_w**2)
+            data_scale  = np.mean(np.sqrt(UU**2 + VV**2))
+            Narrows = np.sqrt(np.prod(UU.shape))
+            scale = 2.0 * data_scale * Narrows / ax_size
+            width = ax_size / Narrows / 20
+            ax.quiver(
+                XYZ[vars[0]][skip_s],
+                XYZ[vars[1]][skip_s],
+                UU, VV,
+                pivot="middle",
+                lw=0.5,
+                scale=scale/arrow_length_scale,
+                scale_units="inches",
+                units="inches",
+                width=width*arrow_width_scale,
+                color="k",
+            )
+
+        if contours:
+            cp = ax.contour(x, y, z, contours, colors="k", linewidths=1)
+            if label_contours:
+                labels = ax.clabel(
+                    cp, inline=1, fontsize=11,
+                    manual=contour_label_positions,
+                    fmt=contour_fmt, use_clabeltext=True)
+                for l in labels:
+                    l.set_rotation(0)
+        ax.set_title("$%s = %.2f$ cm" % ("xyz"[const], const_val))
+        ax.set_xlabel(r"$%s$ (cm)" % "xyz"[vars[0]])
+        ax.set_ylabel(r"$%s$ (cm)" % "xyz"[vars[1]])
+        return fig, ax
+
+    def plot_slices(
+        self,
+        figsize=(7,8),
+        planes={"x": [-0.25, 0.0, 0.25],
+                "y": [-0.25, 0.0, 0.25],
+                "z": [-0.25, 0.0, 0.25]},
+        unit="G",
+        domain=None,
+        image=True,
+        image_clip=None,
+        cmap=None,
+        cbar=True,
+        arrows=True,
+        skip_arrows=10,
+        arrow_length_scale=1,
+        arrow_width_scale=1,
+        contours=4,
+        label_contours=True,
+        contour_fmt="%1.f",
+        transpose=False,
+    ):
+
+
+        units = unit.split("_per_")
+        if len(units) == 2:
+            title = r"$\left | \nabla B \right |$"
+            Bunit, xunit = units
+            if Bunit.lower()[0] == "t":
+                title += " (T/"
+            elif Bunit.lower()[0] == "g":
+                title += " (G/"
+            if xunit.lower() == "cm":
+                title += "cm)"
+            elif xunit.lower() == "m":
+                title += "m)"
+        elif len(units) == 1:
+            Bunit = units[0]
+            title = r"$\bf{B}$"
+            if Bunit.lower()[0] == "t":
+                title += " (T)"
+            elif Bunit.lower()[0] == "g":
+                title += " (G)"
 
         nrow = len(planes)
         ncol = max([len(p) for p in planes.values()])
-        fig, axs = plt.subplots(nrow, ncol, sharex=False, sharey="row", figsize=figsize, constrained_layout=True)
-        for i, (c, v) in enumerate(zip(consts, vars)):
-            ordered_xyz = [0, 0, 0]
-            ordered_xyz[v[0]] = xyz[v[0]]
-            ordered_xyz[v[1]] = xyz[v[1]]
-            const_vals = planes["xyz"[c]]
-            for j, const_val in enumerate(const_vals):
-                ordered_xyz[c] = const_val
-                if nrow > 1 and ncol > 1:
-                    ax = axs[i, j]
-                elif nrow > 1 or ncol > 1:
-                    ax = axs[max(i, j)]
-                else:
-                    ax = axs
-                X, Y, Z = np.meshgrid(*ordered_xyz, indexing="ij")
-                XYZ = [X, Y, Z]
-                r = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
-                unit = 1e12
-                if gauss:
-                    unit *= 1e4
-                VX, VY, VZ = [unit * interp(r) for interp in interps]
-                VX.shape = X.shape
-                VY.shape = Y.shape
-                VZ.shape = Z.shape
-                VXYZ = [VX, VY, VZ]
-                B = np.sqrt(VX ** 2 + VY ** 2 + VZ ** 2)
-
-                if Bclip is None:
-                    Bclip = 5*np.mean(B)
-                mask = B > Bclip
-                B[mask] = np.nan
-                VX[mask] = np.nan
-                VY[mask] = np.nan
-                VZ[mask] = np.nan
-                s = [slice(None, None, None)] * 3
-                skip_s = [slice(0, -1, skip), slice(0, -1, skip), slice(0, -1, skip)]
-                for ii, n in enumerate(B.shape):
-                    if n == 1:
-                        s[ii] = 0
-                        skip_s[ii] = 0
-                s = tuple(s)
-                skip_s = tuple(skip_s)
-                x = xyz[v[0]]
-                y = xyz[v[1]]
-                z = np.sqrt(VXYZ[v[0]]**2 + VXYZ[v[1]]**2)[s].T
-                ax.imshow(
-                    z,
-                    origin="lower",
-                    interpolation="None",
-                    extent=[x[0], x[-1], y[0], y[-1]],
-                )
-                if contours:
-                    cp = ax.contour(x, y, z, contours, colors="k")
-                    if label_contours:
-                        ax.clabel(cp, inline=1, fontsize=11, fmt="%1.f")
-
-                if arrows:
-                    ax.quiver(
-                        XYZ[v[0]][skip_s],
-                        XYZ[v[1]][skip_s],
-                        VXYZ[v[0]][skip_s],
-                        VXYZ[v[1]][skip_s],
-                        pivot="middle",
-                        lw=0.5,
-                        color="k",
+        fig = plt.figure(figsize=figsize)
+        axs = []
+        for row in range(nrow):
+            axrs = ImageGrid(fig, int(str(nrow)+str(1)+str(row+1)),
+                nrows_ncols=(1, ncol),
+                axes_pad=0.25,
+                share_all=True,
+                cbar_location="right",
+                cbar_mode="single",
+                cbar_size="7%",
+                cbar_pad=0.15)
+            axs.append([ax for ax in axrs])
+        axs = np.array(axs)
+        consts = planes.keys()
+        for i, const_name in enumerate(consts):
+            for j, const_val in enumerate(planes[const_name]):
+                ax = axs[i, j]
+                plane=(const_name, const_val)
+                self.plot_slice(
+                    ax=ax,
+                    plane=plane,
+                    unit=unit,
+                    domain=domain,
+                    image=image,
+                    image_clip=image_clip,
+                    cmap=cmap,
+                    cbar=False,
+                    arrows=arrows,
+                    skip_arrows=skip_arrows,
+                    arrow_length_scale=arrow_length_scale/len(consts),
+                    arrow_width_scale=arrow_width_scale/len(consts),
+                    contours=contours,
+                    label_contours=label_contours,
+                    contour_fmt=contour_fmt,
+                    contour_label_positions=None,
+                    transpose=transpose
                     )
-                ax.set_title("$%s = %.2f$ cm" % ("xyz"[c], const_val))
-                ax.set_xlabel("xyz"[v[0]] + " (cm)")
-                if j == 0:
-                    ax.set_ylabel("xyz"[v[1]] + " (cm)")
-        fig.tight_layout()
-        fig.suptitle(title)
-        plt.subplots_adjust(
-            hspace=0.5, wspace=0.1, top=0.93, bottom=0.08, left=0.10, right=0.9
-        )
+                if j != 0:
+                    ax.set_ylabel("")
+
+        if cbar:
+            for axr in axs:
+                self._add_shared_cbar(fig, axr, cmap=cmap,
+                    location="right", label=title)
+
+        #fig.tight_layout()
+        #fig.suptitle(title)
+        #plt.subplots_adjust(
+        #    hspace=0.5, wspace=0.1, top=0.93, bottom=0.08, left=0.10, right=0.9
+        #)
         return fig, axs
+
+    def _add_shared_cbar(self, fig, axs, cmap, **kwargs):
+        cmins, cmaxs = [], []
+        for ax in axs:
+            for im in ax.get_images():
+                cmin, cmax = im.get_clim()
+                cmins.append(cmin)
+                cmaxs.append(cmax)
+        clim = (np.min(cmins), np.max(cmaxs))
+        for ax in axs:
+            for im in ax.get_images():
+                im.set_clim(*clim)
+        norm = Normalize(clim[0], clim[1])
+        axs[-1].cax.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap),
+                     **kwargs)
 
     def plot_linecut(
         self,

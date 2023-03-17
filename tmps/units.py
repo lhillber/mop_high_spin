@@ -2,10 +2,10 @@
 
 from numpy import pi
 
-# Input all numbers in uits of: cm, us, mK, A, kg
+# Input all numbers in uits of: cm, us, K, A, kg
 
-# Boltzmann's constant, kg m^2 s^-2 K^-1 cm^2/m^2 s^2/us^2 K/mk
-kB = 1.381e-23 * 1e4 * 1e-12 * 1e-3
+# Boltzmann's constant, kg m^2 s^-2 K^-1 cm^2/m^2 s^2/us^2
+kB = 1.381e-23 * 1e4 * 1e-12
 # Planck's Constant, m^2 kg s^-1 cm^2/m^2 s/us
 h = 6.62607004e-34 * 1e4 * 1e-6
 # Bohr magneton, A m^2 cm^2/ m^2
@@ -18,9 +18,8 @@ ee = 1.60217e-19 * 1e-6
 eps0 = 8.854187817e-12 * 1e24 * 1e-6
 # vac permiability kg m A^-2 s^-2 cm/m s^2/us^2
 u0 = 1.257e-6 * 1e2 * 1e-12
-# gavity acceleration (positive) m s^-2 cm/m s^2/us^2
-g = 9.81 * 1e2 * 1e-12
-
+# gravity acceleration m s^-2 * cm/m s^2/us^2
+g = 9.81  * 1e2 * 1e-12
 
 # Li7 propertied a and b are HFS params in MHz,
 # outer layer is L, inner layer is J
